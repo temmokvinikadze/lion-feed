@@ -24,7 +24,7 @@ CONCURRENCY = 8
 TIMEOUT = 30.0
 USER_AGENT = (
     "Mozilla/5.0 (compatible; LionAuctionsFeedBot/1.0; "
-    "+https://github.com/) — Meta catalog feed generator"
+    "+https://github.com/) - Meta catalog feed generator"
 )
 
 # --- ka → Meta enum maps ---
