@@ -20,8 +20,8 @@ from bs4 import BeautifulSoup
 BASE = "https://lionauctions.com"
 SITEMAPS = [f"{BASE}/listings-sitemap.xml", f"{BASE}/listings-sitemap2.xml"]
 OUT = Path("public/feed.xml")
-CONCURRENCY = 8
-TIMEOUT = 30.0
+CONCURRENCY = 24
+TIMEOUT = 20.0
 USER_AGENT = (
     "Mozilla/5.0 (compatible; LionAuctionsFeedBot/1.0; "
     "+https://github.com/) - Meta catalog feed generator"
