@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
+import random
 import re
 import sys
 import time
@@ -20,8 +22,16 @@ from bs4 import BeautifulSoup
 BASE = "https://lionauctions.com"
 SITEMAPS = [f"{BASE}/listings-sitemap.xml", f"{BASE}/listings-sitemap2.xml"]
 OUT = Path("public/feed.xml")
-CONCURRENCY = 24
-TIMEOUT = 20.0
+CONCURRENCY = 4      # keep low: the site throttles/blocks aggressive scrapers
+TIMEOUT = 30.0
+MAX_ATTEMPTS = 5     # retries per listing on 429/403/5xx/timeouts
+RETRY_STATUSES = {403, 408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+MAX_FAIL_RATIO = 0.05   # abort publish if more than 5% of listing pages fail
+MIN_KEEP_RATIO = 0.70   # abort publish if feed shrinks below 70% of the live one
+LIVE_FEED_URL = os.environ.get(
+    "LIVE_FEED_URL", "https://temmokvinikadze.github.io/lion-feed/feed.xml"
+)
+STATS: dict[str, int] = {}
 USER_AGENT = (
     "Mozilla/5.0 (compatible; LionAuctionsFeedBot/1.0; "
     "+https://github.com/) - Meta catalog feed generator"
@@ -233,16 +243,63 @@ def build_item(v: dict[str, Any]) -> str | None:
     ])
 
 
-async def fetch_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: str) -> dict[str, Any] | None:
-    async with sem:
-        try:
-            r = await client.get(url)
-            if r.status_code != 200:
-                return None
-            return parse_listing(r.text, url)
-        except Exception as e:
-            print(f"[warn] {url}: {e}", file=sys.stderr)
+def _count(key: str) -> None:
+    STATS[key] = STATS.get(key, 0) + 1
+
+
+async def live_feed_count(client: httpx.AsyncClient) -> int | None:
+    """Number of <item>s in the currently published feed (None if unknown)."""
+    try:
+        r = await client.get(LIVE_FEED_URL, params={"nocache": int(time.time())})
+        if r.status_code != 200:
             return None
+        return r.text.count("<item>")
+    except Exception:
+        return None
+
+
+async def fetch_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: str) -> dict[str, Any] | None:
+    """Fetch + parse one listing, retrying with backoff when the site throttles us."""
+    last = "unknown"
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        retry_after = 0.0
+        async with sem:
+            try:
+                r = await client.get(url)
+            except Exception as e:
+                r = None
+                last = type(e).__name__
+        if r is not None:
+            if r.status_code == 200:
+                v = parse_listing(r.text, url)
+                if v:
+                    _count("ok")
+                    return v
+                # 200 but unparseable: often a bot-challenge page, retry once
+                last = "unparsed"
+                if attempt >= 2:
+                    _count("unparsed")
+                    print(f"[warn] {url}: page could not be parsed", file=sys.stderr)
+                    return None
+            elif r.status_code in (404, 410):
+                _count("gone")
+                return None
+            elif r.status_code in RETRY_STATUSES:
+                last = f"http_{r.status_code}"
+                try:
+                    retry_after = float(r.headers.get("Retry-After", 0))
+                except ValueError:
+                    retry_after = 0.0
+            else:
+                _count(f"failed_http_{r.status_code}")
+                print(f"[warn] {url}: HTTP {r.status_code}", file=sys.stderr)
+                return None
+        if attempt < MAX_ATTEMPTS:
+            delay = max(retry_after, min(60.0, 2.0 ** attempt)) + random.uniform(0, 1.5)
+            await asyncio.sleep(delay)  # sleep outside the semaphore
+    _count(f"failed_{last}")
+    print(f"[warn] {url}: gave up after {MAX_ATTEMPTS} attempts ({last})", file=sys.stderr)
+    return None
 
 
 async def main() -> int:
@@ -254,6 +311,8 @@ async def main() -> int:
         limits=limits, follow_redirects=True,
     ) as client:
         urls = await get_urls(client)
+        prev_count = await live_feed_count(client)
+        print(f"[info] live feed currently has {prev_count} items", file=sys.stderr)
         print(f"[info] {len(urls)} URLs from sitemaps", file=sys.stderr)
         sem = asyncio.Semaphore(CONCURRENCY)
         tasks = [fetch_one(client, sem, u) for u in urls]
@@ -269,6 +328,30 @@ async def main() -> int:
     active = [v for v in results if not v.get("sold_now")]
     items_xml = [build_item(v) for v in active]
     items_xml = [x for x in items_xml if x]
+
+    # --- Safety guard: never publish a half-empty feed ---
+    # Meta replaces the whole catalog with this file, so a partial scrape
+    # would delete real listings. If too many pages failed, or the feed
+    # shrank sharply vs. the live one, exit with an error: the deploy step
+    # is skipped and the previous feed stays live on GitHub Pages.
+    total = len(urls)
+    failed = sum(n for k, n in STATS.items() if k.startswith("failed_"))
+    print(f"[info] fetch stats: {dict(sorted(STATS.items()))}", file=sys.stderr)
+    problems: list[str] = []
+    if total and failed / total > MAX_FAIL_RATIO:
+        problems.append(
+            f"{failed}/{total} pages failed to load ({failed / total:.0%} > {MAX_FAIL_RATIO:.0%}) - site is likely rate-limiting the bot"
+        )
+    if prev_count and len(items_xml) < prev_count * MIN_KEEP_RATIO:
+        problems.append(
+            f"feed would shrink from {prev_count} to {len(items_xml)} items (< {MIN_KEEP_RATIO:.0%} of live feed)"
+        )
+    if problems and os.environ.get("FORCE_PUBLISH") != "1":
+        for p in problems:
+            print(f"[error] {p}", file=sys.stderr)
+        print("[error] Not publishing. The previous feed stays live. "
+              "Set FORCE_PUBLISH=1 to override.", file=sys.stderr)
+        return 1
 
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
