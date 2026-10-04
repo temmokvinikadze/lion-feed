@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-TEMPLATE_VERSION = "2"   # bump to force every image to re-render
+TEMPLATE_VERSION = "3"   # bump to force every image to re-render
 
 SIZE = 1080
 TOP_H = 140              # title band
@@ -42,8 +42,9 @@ BOLD = str(FONT_DIR / "NotoSansGeorgian-Bold.ttf")
 HEAVY = str(FONT_DIR / "NotoSansGeorgian-ExtraBold.ttf")
 REGULAR = str(FONT_DIR / "NotoSansGeorgian-Regular.ttf")
 
-BRAND = "LION AUCTIONS"
-BRAND_SUB = "lionauctions.com"
+# location line (Mtavruli capitals), shown with a map-pin icon
+PLACE = "ᲬᲔᲠᲝᲕᲐᲜᲘ"
+PLACE_SUB = "ᲚᲐᲘᲝᲜ ᲐᲣᲥᲪᲘᲝᲜᲘᲡ ᲐᲕᲢᲝᲡᲐᲓᲒᲝᲛᲘ"
 
 
 def _font(path: str, size: int) -> ImageFont.FreeTypeFont:
@@ -86,6 +87,16 @@ def _photo_block(photo: Image.Image) -> Image.Image:
     return bg
 
 
+def _pin(d: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:
+    """Map-pin icon centred on (cx, cy): round head with a hole, pointed tail."""
+    head_cy = cy - r * 0.45
+    tip = (cx, cy + r * 1.35)
+    d.polygon([(cx - r * 0.82, head_cy + r * 0.45), (cx + r * 0.82, head_cy + r * 0.45), tip], fill=RED)
+    d.ellipse([cx - r, head_cy - r, cx + r, head_cy + r], fill=RED)
+    h = r * 0.42
+    d.ellipse([cx - h, head_cy - h, cx + h, head_cy + h], fill=BG)
+
+
 def render(photo: Image.Image, title: str, price_usd: int, price_label: str) -> Image.Image:
     canvas = Image.new("RGB", (SIZE, SIZE), BG)
     canvas.paste(_photo_block(photo), (0, TOP_H))
@@ -111,11 +122,14 @@ def render(photo: Image.Image, title: str, price_usd: int, price_label: str) -> 
     d.text((px, pill[1] + 6), price_label, font=label_f, fill=(255, 225, 225), anchor="la")
     d.text((px, pill[3] - 14), price_txt, font=price_f, fill=WHITE, anchor="ls")
 
-    brand_f = _font(BOLD, 34)
-    sub_f = _font(REGULAR, 22)
+    place_f = _font(HEAVY, 40)
+    sub_f = _font(BOLD, 21)
     rx = SIZE - MARGIN
-    d.text((rx, cy - 4), BRAND, font=brand_f, fill=WHITE, anchor="rs")
-    d.text((rx, cy + 10), BRAND_SUB, font=sub_f, fill=MUTED, anchor="rt")
+    text_w = int(max(d.textlength(PLACE, font=place_f), d.textlength(PLACE_SUB, font=sub_f)))
+    tx = rx - text_w                       # left edge of the text block
+    d.text((tx, cy + 2), PLACE, font=place_f, fill=WHITE, anchor="ls")
+    d.text((tx, cy + 14), PLACE_SUB, font=sub_f, fill=MUTED, anchor="lt")
+    _pin(d, tx - 22 - 22, cy, 22)
     return canvas
 
 
