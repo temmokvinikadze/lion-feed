@@ -7,6 +7,7 @@ on:
   push:
     paths:
       - 'generate_feed.py'
+      - 'ad_images.py'
       - 'requirements.txt'
       - '.github/workflows/generate-feed.yml'
 
@@ -32,8 +33,20 @@ jobs:
           cache: 'pip'
       - name: Install dependencies
         run: pip install -r requirements.txt
+      - name: Restore ad image cache
+        uses: actions/cache/restore@v4
+        with:
+          path: img_cache
+          key: ad-images-${{ github.run_id }}
+          restore-keys: ad-images-
       - name: Generate feed
         run: python generate_feed.py
+      - name: Save ad image cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: img_cache
+          key: ad-images-${{ github.run_id }}
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload Pages artifact

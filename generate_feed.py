@@ -19,6 +19,8 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
+from ad_images import build_images
+
 BASE = "https://lionauctions.com"
 SITEMAPS = [f"{BASE}/listings-sitemap.xml", f"{BASE}/listings-sitemap2.xml"]
 OUT = Path("public/feed.xml")
@@ -31,6 +33,10 @@ MIN_KEEP_RATIO = 0.70   # abort publish if feed shrinks below 70% of the live on
 LIVE_FEED_URL = os.environ.get(
     "LIVE_FEED_URL", "https://temmokvinikadze.github.io/lion-feed/feed.xml"
 )
+# Branded square ad images (see ad_images.py)
+PAGES_BASE = LIVE_FEED_URL.rsplit("/", 1)[0]
+IMG_OUT = OUT.parent / "img"
+IMG_CACHE = Path(os.environ.get("IMG_CACHE_DIR", "img_cache"))
 STATS: dict[str, int] = {}
 USER_AGENT = (
     "Mozilla/5.0 (compatible; LionAuctionsFeedBot/1.0; "
@@ -187,12 +193,28 @@ def xml_escape(s: Any) -> str:
     return html.escape(str(s), quote=True)
 
 
-def build_item(v: dict[str, Any]) -> str | None:
-    price = v.get("buy_now_usd") or v.get("starting_bid_usd")
+def feed_price(v: dict[str, Any]) -> tuple[int | None, str]:
+    """Price used in the feed and its Georgian label for the ad image."""
+    if v.get("buy_now_usd"):
+        return v["buy_now_usd"], "ყიდვის ფასი"
+    if v.get("starting_bid_usd"):
+        return v["starting_bid_usd"], "საწყისი ბიდი"
+    return None, ""
+
+
+def feed_title(v: dict[str, Any]) -> str:
+    return f"{v['year']} {v['make']} {v['model']}"
+
+
+def build_item(v: dict[str, Any], ad_image: str | None = None) -> str | None:
+    price, _ = feed_price(v)
     if not price or not v.get("make") or not v.get("model"):
         return None
     mi_val, mi_unit = mileage_km(v.get("mileage", ""))
     imgs = v.get("images") or []
+    if ad_image:
+        # branded square first; original photos follow as additional images
+        imgs = [f"{PAGES_BASE}/img/{ad_image}"] + imgs
     img_lines = []
     for i, u in enumerate(imgs[:20]):
         tag = "image_link" if i == 0 else "additional_image_link"
@@ -210,7 +232,7 @@ def build_item(v: dict[str, Any]) -> str | None:
     desc = desc.strip(" ·")[:5000]
 
     availability = "out of stock" if v.get("sold_now") else "in stock"
-    title = f"{v['year']} {v['make']} {v['model']}"
+    title = feed_title(v)
 
     return "\n".join([
         "  <item>",
@@ -326,8 +348,8 @@ async def main() -> int:
 
     # Filter out sold listings that Meta shouldn't advertise
     active = [v for v in results if not v.get("sold_now")]
-    items_xml = [build_item(v) for v in active]
-    items_xml = [x for x in items_xml if x]
+    active = [v for v in active if build_item(v)]   # drop items Meta can't use
+    items_xml = active  # counted by the guard below; rendered after images
 
     # --- Safety guard: never publish a half-empty feed ---
     # Meta replaces the whole catalog with this file, so a partial scrape
@@ -352,6 +374,20 @@ async def main() -> int:
         print("[error] Not publishing. The previous feed stays live. "
               "Set FORCE_PUBLISH=1 to override.", file=sys.stderr)
         return 1
+
+    # --- Branded square images (only new/changed listings are rendered) ---
+    jobs = []
+    for v in active:
+        price, label = feed_price(v)
+        if v.get("images"):
+            jobs.append({"lot_id": v["lot_id"], "src": v["images"][0],
+                         "title": feed_title(v), "price": price, "label": label})
+    async with httpx.AsyncClient(
+        timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}, follow_redirects=True,
+    ) as client:
+        ad_imgs = await build_images(client, jobs, IMG_CACHE, IMG_OUT, CONCURRENCY)
+    items_xml = [build_item(v, ad_imgs.get(str(v["lot_id"]))) for v in active]
+    items_xml = [x for x in items_xml if x]
 
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
