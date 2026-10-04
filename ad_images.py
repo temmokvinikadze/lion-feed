@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-TEMPLATE_VERSION = "3"   # bump to force every image to re-render
+TEMPLATE_VERSION = "4"   # bump to force every image to re-render
 
 SIZE = 1080
 TOP_H = 140              # title band
@@ -103,24 +103,29 @@ def render(photo: Image.Image, title: str, price_usd: int, price_label: str) -> 
     d = ImageDraw.Draw(canvas)
 
     # --- top band: title ---
-    d.rectangle([0, 0, 10, TOP_H], fill=RED)            # brand accent stripe
     max_w = SIZE - 2 * MARGIN
     tf = _fit_font(d, title, BOLD, max_w, 64, 40)
     t = _ellipsize(d, title, tf, max_w)
-    d.text((MARGIN, TOP_H // 2), t, font=tf, fill=WHITE, anchor="lm")
+    d.text((SIZE // 2, TOP_H // 2), t, font=tf, fill=WHITE, anchor="mm")
 
     # --- bottom band: price pill + brand ---
     y0 = TOP_H + PHOTO_H
     cy = y0 + BOTTOM_H // 2
     label_f = _font(REGULAR, 24)
-    price_f = _font(HEAVY, 54)
+    price_f = _font(HEAVY, 54 if price_label else 62)
     price_txt = f"${price_usd:,}"
-    pw = int(max(d.textlength(price_txt, font=price_f), d.textlength(price_label, font=label_f)))
-    pill = [MARGIN - 6, y0 + 14, MARGIN + pw + 34, y0 + BOTTOM_H - 14]
+    pw = int(max(d.textlength(price_txt, font=price_f),
+                 d.textlength(price_label, font=label_f) if price_label else 0))
+    pad = 20 if price_label else 30
+    pill = [MARGIN - 6, y0 + 14, MARGIN + pw + 2 * pad - 6, y0 + BOTTOM_H - 14]
     d.rounded_rectangle(pill, radius=18, fill=RED)
     px = MARGIN + 14
-    d.text((px, pill[1] + 6), price_label, font=label_f, fill=(255, 225, 225), anchor="la")
-    d.text((px, pill[3] - 14), price_txt, font=price_f, fill=WHITE, anchor="ls")
+    if price_label:
+        d.text((px, pill[1] + 6), price_label, font=label_f, fill=(255, 225, 225), anchor="la")
+        d.text((px, pill[3] - 14), price_txt, font=price_f, fill=WHITE, anchor="ls")
+    else:
+        d.text(((pill[0] + pill[2]) // 2, (pill[1] + pill[3]) // 2), price_txt,
+               font=price_f, fill=WHITE, anchor="mm")
 
     place_f = _font(HEAVY, 40)
     sub_f = _font(BOLD, 21)

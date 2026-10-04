@@ -117,6 +117,20 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
         for m in re.findall(r"\$\s?([\d\s,]+)", price_text)
     ]
     usd_prices = [p for p in usd_prices if p > 100]
+    # Prefer reading prices by their on-page labels:
+    #   "საწყისი თანხა აუქციონზე $11 500"  → auction starting bid
+    #   "იყიდე ახლა $16 500"               → buy-now price
+    def _labeled(label_re: str) -> int | None:
+        m = re.search(label_re + r"[^$]{0,40}\$\s?([\d\s,]+)", price_text, re.I)
+        if not m:
+            return None
+        n = int(re.sub(r"[^\d]", "", m.group(1)) or 0)
+        return n if n > 100 else None
+    buy_now = _labeled(r"იყიდე\s+ახლა")
+    start_bid = _labeled(r"საწყისი")
+    if buy_now is None and start_bid is None:   # labels not found: old positional logic
+        start_bid = usd_prices[0] if usd_prices else None
+        buy_now = usd_prices[1] if len(usd_prices) > 1 else None
 
     # Gallery images
     gallery = soup.select_one(".elementor-widget-motors-single-listing-gallery")
@@ -162,9 +176,10 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
         "condition_ka": specs.get("მდგომარეობა", ""),
         "status_ka": specs.get("სტატუსი", ""),
         "customs": specs.get("განბაჟება", ""),
+        "purchase_type": next((val for k, val in specs.items() if "შეძენის" in k), ""),
         "vin": vin,
-        "starting_bid_usd": usd_prices[0] if usd_prices else None,
-        "buy_now_usd": usd_prices[1] if len(usd_prices) > 1 else None,
+        "starting_bid_usd": start_bid,
+        "buy_now_usd": buy_now,
         "sold_now": sold_now,
         "images": imgs,
         "description_meta": desc_meta,
@@ -193,13 +208,21 @@ def xml_escape(s: Any) -> str:
     return html.escape(str(s), quote=True)
 
 
+def is_buy_today(v: dict[str, Any]) -> bool:
+    """Purchase type "შეიძინე დღესვე" (buy today). Live-auction lots are excluded."""
+    return "დღესვე" in (v.get("purchase_type") or "")
+
+
 def feed_price(v: dict[str, Any]) -> tuple[int | None, str]:
-    """Price used in the feed and its Georgian label for the ad image."""
-    if v.get("buy_now_usd"):
-        return v["buy_now_usd"], "ყიდვის ფასი"
-    if v.get("starting_bid_usd"):
-        return v["starting_bid_usd"], "საწყისი ბიდი"
-    return None, ""
+    """
+    Price used in the feed (and on the ad image, without a label).
+    Only "შეიძინე დღესვე" listings go to Meta; live-auction lots and their
+    auction prices are never included.
+    """
+    if not is_buy_today(v):
+        return None, ""
+    price = v.get("buy_now_usd") or v.get("starting_bid_usd")  # single price on buy-today pages
+    return (price, "") if price else (None, "")
 
 
 def feed_title(v: dict[str, Any]) -> str:
@@ -225,8 +248,6 @@ def build_item(v: dict[str, Any], ad_image: str | None = None) -> str | None:
         v.get("status_ka") and f"სტატუსი: {v['status_ka']}",
         v.get("customs") and f"განბაჟება: {v['customs']}",
         v.get("engine") and f"ძრავი: {v['engine']}L",
-        v.get("starting_bid_usd") and f"საწყისი ბიდი: ${v['starting_bid_usd']}",
-        v.get("buy_now_usd") and f"ყიდვის ფასი: ${v['buy_now_usd']}",
     ]
     desc = (v.get("description_meta") or "") + " · " + " · ".join(p for p in parts if p)
     desc = desc.strip(" ·")[:5000]
@@ -348,6 +369,9 @@ async def main() -> int:
 
     # Filter out sold listings that Meta shouldn't advertise
     active = [v for v in results if not v.get("sold_now")]
+    print(f"[info] purchase types: "
+          f"{ {t: sum(1 for v in active if v.get('purchase_type') == t) for t in {v.get('purchase_type') for v in active}} }",
+          file=sys.stderr)
     active = [v for v in active if build_item(v)]   # drop items Meta can't use
     items_xml = active  # counted by the guard below; rendered after images
 

@@ -137,3 +137,7 @@ Auction photos are landscape, so Meta letterboxed them with grey bars in 1:1 car
 - Rendered images are cached between runs (`img_cache`, via `actions/cache`), so only new or changed cars are downloaded and rendered.
 - To change the design, edit `render()` and bump `TEMPLATE_VERSION` to re-render all images.
 - Font: Noto Sans Georgian (OFL), bundled in `fonts/`.
+
+## Which listings go to Meta
+
+Only listings whose purchase type (შეძენის ტიპი) is **შეიძინე დღესვე** are included, with their buy price. Live-auction lots and their auction prices are left out. The ad image shows just the price, with no label.
