@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-TEMPLATE_VERSION = "1"   # bump to force every image to re-render
+TEMPLATE_VERSION = "2"   # bump to force every image to re-render
 
 SIZE = 1080
 TOP_H = 140              # title band
@@ -38,8 +38,9 @@ MUTED = (165, 170, 180)
 RED = (190, 30, 35)
 
 FONT_DIR = Path(__file__).parent / "fonts"
-BOLD = str(FONT_DIR / "DejaVuSans-Bold.ttf")
-REGULAR = str(FONT_DIR / "DejaVuSans.ttf")
+BOLD = str(FONT_DIR / "NotoSansGeorgian-Bold.ttf")
+HEAVY = str(FONT_DIR / "NotoSansGeorgian-ExtraBold.ttf")
+REGULAR = str(FONT_DIR / "NotoSansGeorgian-Regular.ttf")
 
 BRAND = "LION AUCTIONS"
 BRAND_SUB = "lionauctions.com"
@@ -101,14 +102,14 @@ def render(photo: Image.Image, title: str, price_usd: int, price_label: str) -> 
     y0 = TOP_H + PHOTO_H
     cy = y0 + BOTTOM_H // 2
     label_f = _font(REGULAR, 24)
-    price_f = _font(BOLD, 58)
+    price_f = _font(HEAVY, 54)
     price_txt = f"${price_usd:,}"
     pw = int(max(d.textlength(price_txt, font=price_f), d.textlength(price_label, font=label_f)))
     pill = [MARGIN - 6, y0 + 14, MARGIN + pw + 34, y0 + BOTTOM_H - 14]
     d.rounded_rectangle(pill, radius=18, fill=RED)
     px = MARGIN + 14
-    d.text((px, pill[1] + 10), price_label, font=label_f, fill=(255, 225, 225), anchor="la")
-    d.text((px, pill[3] - 8), price_txt, font=price_f, fill=WHITE, anchor="ld")
+    d.text((px, pill[1] + 6), price_label, font=label_f, fill=(255, 225, 225), anchor="la")
+    d.text((px, pill[3] - 14), price_txt, font=price_f, fill=WHITE, anchor="ls")
 
     brand_f = _font(BOLD, 34)
     sub_f = _font(REGULAR, 22)

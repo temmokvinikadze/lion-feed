@@ -136,4 +136,4 @@ Auction photos are landscape, so Meta letterboxed them with grey bars in 1:1 car
 - Images are served from GitHub Pages at `/img/<lot>-<hash>.jpg`. The hash changes when the price, title or photo changes, so Meta re-fetches it.
 - Rendered images are cached between runs (`img_cache`, via `actions/cache`), so only new or changed cars are downloaded and rendered.
 - To change the design, edit `render()` and bump `TEMPLATE_VERSION` to re-render all images.
-- Fonts (DejaVu Sans, with Georgian) are bundled in `fonts/`.
+- Font: Noto Sans Georgian (OFL), bundled in `fonts/`.
