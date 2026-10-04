@@ -126,6 +126,15 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
             return None
         n = int(re.sub(r"[^\d]", "", m.group(1)) or 0)
         return n if n > 100 else None
+    # Purchase type isn't in the spec list on listing pages; tell it from the
+    # price box. Live-auction lots show "საწყისი თანხა აუქციონზე" (+ optional
+    # "იყიდე ახლა"); buy-today lots show a single price and a "შეიძინე დღესვე" button.
+    if re.search(r"აუქციონ", price_text):
+        purchase_type = "ლაივ აუქციონი"
+    elif usd_prices:
+        purchase_type = "შეიძინე დღესვე"
+    else:
+        purchase_type = ""
     buy_now = _labeled(r"იყიდე\s+ახლა")
     start_bid = _labeled(r"საწყისი")
     if buy_now is None and start_bid is None:   # labels not found: old positional logic
@@ -176,7 +185,7 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
         "condition_ka": specs.get("მდგომარეობა", ""),
         "status_ka": specs.get("სტატუსი", ""),
         "customs": specs.get("განბაჟება", ""),
-        "purchase_type": next((val for k, val in specs.items() if "შეძენის" in k), ""),
+        "purchase_type": purchase_type,
         "vin": vin,
         "starting_bid_usd": start_bid,
         "buy_now_usd": buy_now,
@@ -369,6 +378,8 @@ async def main() -> int:
 
     # Filter out sold listings that Meta shouldn't advertise
     active = [v for v in results if not v.get("sold_now")]
+    type_counts = {t: sum(1 for v in active if v.get("purchase_type") == t)
+                   for t in {v.get("purchase_type") for v in active}}
     print(f"[info] purchase types: "
           f"{ {t: sum(1 for v in active if v.get('purchase_type') == t) for t in {v.get('purchase_type') for v in active}} }",
           file=sys.stderr)
@@ -394,8 +405,7 @@ async def main() -> int:
         )
     gh = bool(os.environ.get("GITHUB_ACTIONS"))
     if gh:   # annotations show up on the run page without opening the logs
-        types = {t: sum(1 for v in active if v.get("purchase_type") == t)
-                 for t in {v.get("purchase_type") for v in active}}
+        types = type_counts
         print(f"::notice title=Feed stats::urls={total} scraped={len(results)} "
               f"usable={len(items_xml)} live={prev_count} fetch={dict(sorted(STATS.items()))} "
               f"purchase_types={types}")
