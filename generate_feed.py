@@ -392,9 +392,18 @@ async def main() -> int:
         problems.append(
             f"feed would shrink from {prev_count} to {len(items_xml)} items (< {MIN_KEEP_RATIO:.0%} of live feed)"
         )
+    gh = bool(os.environ.get("GITHUB_ACTIONS"))
+    if gh:   # annotations show up on the run page without opening the logs
+        types = {t: sum(1 for v in active if v.get("purchase_type") == t)
+                 for t in {v.get("purchase_type") for v in active}}
+        print(f"::notice title=Feed stats::urls={total} scraped={len(results)} "
+              f"usable={len(items_xml)} live={prev_count} fetch={dict(sorted(STATS.items()))} "
+              f"purchase_types={types}")
     if problems and os.environ.get("FORCE_PUBLISH") != "1":
         for p in problems:
             print(f"[error] {p}", file=sys.stderr)
+            if gh:
+                print(f"::error title=Feed not published::{p}")
         print("[error] Not publishing. The previous feed stays live. "
               "Set FORCE_PUBLISH=1 to override.", file=sys.stderr)
         return 1
@@ -434,4 +443,9 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    try:
+        sys.exit(asyncio.run(main()))
+    except Exception as e:
+        if os.environ.get("GITHUB_ACTIONS"):
+            print(f"::error title=Feed generator crashed::{type(e).__name__}: {e}")
+        raise

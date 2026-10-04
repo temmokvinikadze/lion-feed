@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 */6 * * *'
   workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Publish even if the feed shrinks a lot (use after an intentional filter change)'
+        type: boolean
+        default: false
   push:
     paths:
       - 'generate_feed.py'
@@ -41,6 +46,8 @@ jobs:
           restore-keys: ad-images-
       - name: Generate feed
         run: python generate_feed.py
+        env:
+          FORCE_PUBLISH: ${{ inputs.force_publish && '1' || '0' }}
       - name: Save ad image cache
         if: success()
         uses: actions/cache/save@v4
