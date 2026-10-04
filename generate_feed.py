@@ -111,7 +111,19 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
     for tag in (price_el.select("script, style") if price_el else []):
         tag.decompose()
     price_text = " ".join(price_el.stripped_strings) if price_el else ""
-    sold_now = bool(re.search(r"\bsold\b|გაიყიდა", price_text, re.I))
+    # Sold / finished lots: "SOLD" ribbon on the gallery, "მოგებული ბიდი"
+    # (winning bid) in the price box, or "აუქციონი დასრულებულია" (auction over).
+    gallery_el = soup.select_one(".elementor-widget-motors-single-listing-gallery")
+    gallery_text = " ".join(gallery_el.stripped_strings) if gallery_el else ""
+    finished = any(
+        "დასრულებულია" in " ".join(w.stripped_strings)
+        for w in soup.select(".elementor-widget-shortcode")
+    )
+    sold_now = bool(
+        re.search(r"\bsold\b|გაიყიდა|მოგებული", price_text, re.I)
+        or re.search(r"\bsold\b", gallery_text, re.I)
+        or finished
+    )
     usd_prices = [
         int(m.replace(" ", "").replace(",", ""))
         for m in re.findall(r"\$\s?([\d\s,]+)", price_text)
@@ -129,7 +141,13 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
     # Purchase type isn't in the spec list on listing pages; tell it from the
     # price box. Live-auction lots show "საწყისი თანხა აუქციონზე" (+ optional
     # "იყიდე ახლა"); buy-today lots show a single price and a "შეიძინე დღესვე" button.
-    if re.search(r"აუქციონ", price_text):
+    type_el = soup.select_one(".inside-page-auction-type")
+    type_text = " ".join(type_el.stripped_strings) if type_el else ""
+    if "დღესვე" in type_text:
+        purchase_type = "შეიძინე დღესვე"
+    elif type_text:
+        purchase_type = type_text[:40]          # e.g. "ლაივ აუქციონი"
+    elif re.search(r"აუქციონ", price_text):
         purchase_type = "ლაივ აუქციონი"
     elif usd_prices:
         purchase_type = "შეიძინე დღესვე"
