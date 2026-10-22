@@ -38,6 +38,8 @@ PAGES_BASE = LIVE_FEED_URL.rsplit("/", 1)[0]
 IMG_OUT = OUT.parent / "img"
 IMG_CACHE = Path(os.environ.get("IMG_CACHE_DIR", "img_cache"))
 STATS: dict[str, int] = {}
+GEL_REFETCHES = 3    # re-requests for pages served with a GEL price
+NBG_RATE_URL = "https://nbg.gov.ge/gw/api/ct/monetarypolicy/currencies/en/json/"
 USER_AGENT = (
     "Mozilla/5.0 (compatible; LionAuctionsFeedBot/1.0; "
     "+https://github.com/) - Meta catalog feed generator"
@@ -88,13 +90,6 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
     # Title widget: "#12345 MAKE MODEL YEAR"
     title_el = soup.select_one(".elementor-widget-motors-single-listing-classified-title")
     title_text = " ".join(title_el.stripped_strings) if title_el else ""
-    tm = re.match(r"^#(\d+)\s+(.+?)\s+((?:19|20)\d{2})$", title_text)
-    if not tm:
-        return None
-    lot_id = tm.group(1)
-    make_model_str = tm.group(2)
-    year = tm.group(3)
-
     # Spec list
     specs: dict[str, str] = {}
     for li in soup.select(".elementor-widget-motors-single-listing-classified-listing-data li.data-list-item"):
@@ -105,6 +100,17 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
             value = val_el.get_text(strip=True) or val_el.get("title")
             if label and value:
                 specs[label] = value
+
+    tm = re.match(r"^#(\d+)\s+(.+?)\s+((?:19|20)\d{2})$", title_text)
+    if tm:
+        lot_id, make_model_str, year = tm.group(1), tm.group(2), tm.group(3)
+    else:
+        # Some titles have no year ("#94955 SUBARU ASCENT"): take it from the spec list
+        tm2 = re.match(r"^#(\d+)\s+(.+)$", title_text)
+        spec_year = re.search(r"(?:19|20)\d{2}", specs.get("წელი", ""))
+        if not tm2 or not spec_year:
+            return None
+        lot_id, make_model_str, year = tm2.group(1), tm2.group(2).strip(), spec_year.group(0)
 
     # Price widget
     price_el = soup.select_one(".elementor-widget-motors-single-listing-classified-price")
@@ -129,6 +135,14 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
         for m in re.findall(r"\$\s?([\d\s,]+)", price_text)
     ]
     usd_prices = [p for p in usd_prices if p > 100]
+    # The site sometimes serves the page with the price in GEL ("GEL 55,069")
+    # instead of USD (cached currency variant). Keep it so the caller can retry
+    # or convert instead of silently dropping the car.
+    gel_prices = [
+        int(re.sub(r"[^\d]", "", m) or 0)
+        for m in re.findall(r"(?:GEL|₾)\s?([\d][\d\s,]*)", price_text)
+    ]
+    gel_prices = [p for p in gel_prices if p > 100]
     # Prefer reading prices by their on-page labels:
     #   "საწყისი თანხა აუქციონზე $11 500"  → auction starting bid
     #   "იყიდე ახლა $16 500"               → buy-now price
@@ -207,6 +221,7 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
         "vin": vin,
         "starting_bid_usd": start_bid,
         "buy_now_usd": buy_now,
+        "price_gel": gel_prices[0] if gel_prices and not usd_prices else None,
         "sold_now": sold_now,
         "images": imgs,
         "description_meta": desc_meta,
@@ -328,6 +343,39 @@ async def live_feed_count(client: httpx.AsyncClient) -> int | None:
         return None
 
 
+async def refetch_usd(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: str) -> dict[str, Any] | None:
+    """Re-request a listing that was served with a GEL price, bypassing caches/cookies."""
+    for attempt in range(GEL_REFETCHES):
+        await asyncio.sleep(1.0 + random.uniform(0, 1.5))
+        async with sem:
+            try:
+                r = await client.get(
+                    url,
+                    params={"currency": "USD", "nc": random.randint(1, 10**9)},
+                    headers={"Cache-Control": "no-cache", "Pragma": "no-cache", "Cookie": ""},
+                )
+            except Exception:
+                continue
+        if r.status_code != 200:
+            continue
+        v = parse_listing(r.text, url)
+        if v and not v.get("price_gel") and (v.get("buy_now_usd") or v.get("starting_bid_usd")):
+            return v
+    return None
+
+
+async def usd_gel_rate(client: httpx.AsyncClient) -> float | None:
+    """Official NBG USD→GEL rate, used only to convert listings stuck in GEL."""
+    try:
+        r = await client.get(NBG_RATE_URL, params={"currencies": "USD"})
+        r.raise_for_status()
+        cur = r.json()[0]["currencies"][0]
+        return float(cur["rate"]) / float(cur.get("quantity") or 1)
+    except Exception as e:
+        print(f"[warn] could not get USD/GEL rate: {e}", file=sys.stderr)
+        return None
+
+
 async def fetch_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: str) -> dict[str, Any] | None:
     """Fetch + parse one listing, retrying with backoff when the site throttles us."""
     last = "unknown"
@@ -342,6 +390,14 @@ async def fetch_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, url: str)
         if r is not None:
             if r.status_code == 200:
                 v = parse_listing(r.text, url)
+                if v and v.get("price_gel") and is_buy_today(v) and not v.get("sold_now"):
+                    # Page came back priced in GEL: ask again for a fresh copy
+                    v2 = await refetch_usd(client, sem, url)
+                    if v2:
+                        _count("gel_refetched_usd")
+                        v = v2
+                    else:
+                        _count("gel_only")
                 if v:
                     _count("ok")
                     return v
@@ -393,6 +449,18 @@ async def main() -> int:
                 results.append(v)
             if i % 100 == 0:
                 print(f"[info] scraped {i}/{len(urls)}  ok:{len(results)}", file=sys.stderr)
+
+        # Listings that stayed GEL-only after refetching: convert at the NBG
+        # rate and round to the site's $100 steps, so the car isn't dropped.
+        gel_only = [v for v in results if v.get("price_gel") and not v.get("sold_now")
+                    and not (v.get("buy_now_usd") or v.get("starting_bid_usd"))]
+        if gel_only:
+            rate = await usd_gel_rate(client)
+            if rate:
+                for v in gel_only:
+                    v["buy_now_usd"] = int(round(v["price_gel"] / rate / 100.0) * 100)
+                    _count("gel_converted")
+            print(f"[info] {len(gel_only)} listings priced only in GEL (rate={rate})", file=sys.stderr)
 
     # Filter out sold listings that Meta shouldn't advertise
     active = [v for v in results if not v.get("sold_now")]
