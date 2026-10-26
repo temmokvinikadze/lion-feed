@@ -19,7 +19,7 @@ from typing import Any
 import httpx
 from bs4 import BeautifulSoup
 
-from ad_images import build_images
+from ad_images import build_images, mtavruli
 
 BASE = "https://lionauctions.com"
 SITEMAPS = [f"{BASE}/listings-sitemap.xml", f"{BASE}/listings-sitemap2.xml"]
@@ -298,6 +298,31 @@ def feed_price(v: dict[str, Any]) -> tuple[int | None, str]:
     return (price, "") if price else (None, "")
 
 
+KA_MONTHS = ["იანვარი", "თებერვალი", "მარტი", "აპრილი", "მაისი", "ივნისი", "ივლისი",
+             "აგვისტო", "სექტემბერი", "ოქტომბერი", "ნოემბერი", "დეკემბერი"]
+KA_WEEKDAYS = ["ორშაბათი", "სამშაბათი", "ოთხშაბათი", "ხუთშაბათი", "პარასკევი", "შაბათი", "კვირა"]
+
+
+def auction_banner(v: dict[str, Any]) -> str:
+    """Ad-image strip for physical-auction lots: "ᲐᲣᲥᲪᲘᲝᲜᲘ ᲬᲔᲠᲝᲕᲐᲜᲨᲘ\nᲨᲐᲑᲐᲗᲘ, 31 ᲝᲥᲢᲝᲛᲑᲔᲠᲘ"."""
+    if not is_live_auction(v):
+        return ""
+    when = v.get("auction_date") or ""
+    m = re.match(r"(\d{1,2})\s+(\S+)", when)
+    if m and m.group(2) in KA_MONTHS:
+        # the site gives no year: take the nearest such date (allows a week back)
+        import datetime as dt
+        today = dt.date.today()
+        day, month = int(m.group(1)), KA_MONTHS.index(m.group(2)) + 1
+        try:
+            d = min((dt.date(y, month, day) for y in (today.year - 1, today.year, today.year + 1)),
+                    key=lambda x: abs((x - today).days))
+            when = f"{KA_WEEKDAYS[d.weekday()]}, {day} {m.group(2)}"
+        except ValueError:
+            pass
+    return mtavruli("აუქციონი წეროვანში") + "\n" + mtavruli(when or "ფიზიკური აუქციონი")
+
+
 def feed_title(v: dict[str, Any]) -> str:
     return f"{v['year']} {v['make']} {v['model']}"
 
@@ -551,7 +576,9 @@ async def main() -> int:
         price, label = feed_price(v)
         if v.get("images"):
             jobs.append({"lot_id": v["lot_id"], "src": v["images"][0],
-                         "title": feed_title(v), "price": price, "label": label})
+                         "title": (f"{v['year']} {v['make']}\n{v['model']}"
+                                   if is_live_auction(v) else feed_title(v)),
+                         "price": price, "label": label, "banner": auction_banner(v)})
     async with httpx.AsyncClient(
         timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}, follow_redirects=True,
     ) as client:
