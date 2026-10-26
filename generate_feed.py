@@ -170,6 +170,12 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
         purchase_type = "შეიძინე დღესვე"
     else:
         purchase_type = ""
+    # Physical (live) auction date: "ლაივ აუქციონის თარიღი: 31 ოქტომბერი"
+    date_el = soup.select_one(".auction-notice .auction-date")
+    dm = re.search(r"\d{1,2}\s+[ა-ჰ]+", date_el.get_text(" ", strip=True) if date_el else "") \
+        or re.search(r"ლაივ\s+აუქციონის\s+თარიღი:?\s*(\d{1,2}\s+[ა-ჰ]+)",
+                     soup.get_text(" ", strip=True))
+    auction_date = re.sub(r"\s+", " ", dm.group(dm.lastindex or 0)) if dm else ""
     buy_now = _labeled(r"იყიდე\s+ახლა")
     start_bid = _labeled(r"საწყისი")
     if buy_now is None and start_bid is None:   # labels not found: old positional logic
@@ -222,6 +228,7 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
         "customs": specs.get("განბაჟება", ""),
         "location_ka": specs.get("მდებარეობა", ""),
         "purchase_type": purchase_type,
+        "auction_date": auction_date,
         "vin": vin,
         "starting_bid_usd": start_bid,
         "buy_now_usd": buy_now,
@@ -264,12 +271,27 @@ def is_buy_today(v: dict[str, Any]) -> bool:
     return "დღესვე" in (v.get("purchase_type") or "")
 
 
+def is_live_auction(v: dict[str, Any]) -> bool:
+    """Physical auction lots ("ლაივ აუქციონი", Saturdays in Tserovani)."""
+    return "აუქციონ" in (v.get("purchase_type") or "")
+
+
+def sale_type_label(v: dict[str, Any]) -> str:
+    """custom_label_1: used for the physical-auction catalog set."""
+    return "ფიზიკური აუქციონი" if is_live_auction(v) else "შეიძინე დღესვე"
+
+
 def feed_price(v: dict[str, Any]) -> tuple[int | None, str]:
     """
     Price used in the feed (and on the ad image, without a label).
-    Only "შეიძინე დღესვე" listings go to Meta; live-auction lots and their
-    auction prices are never included.
+    "შეიძინე დღესვე" listings use their single price; physical-auction lots
+    ("ლაივ აუქციონი") use the starting price, labelled "საწყისი ფასი".
     """
+    if is_live_auction(v):
+        # Auction lots: starting price, labelled on the ad image.
+        # The buy-now price goes into the description.
+        price = v.get("starting_bid_usd") or v.get("buy_now_usd")
+        return (price, "საწყისი ფასი") if price else (None, "")
     if not is_buy_today(v):
         return None, ""
     price = v.get("buy_now_usd") or v.get("starting_bid_usd")  # single price on buy-today pages
@@ -300,6 +322,13 @@ def build_item(v: dict[str, Any], ad_image: str | None = None) -> str | None:
         v.get("customs") and f"განბაჟება: {v['customs']}",
         v.get("engine") and f"ძრავი: {v['engine']}L",
     ]
+    if is_live_auction(v):
+        auction = [
+            "ფიზიკური აუქციონი" + (f" {re.sub(r'ი$', '', v['auction_date'])}ს" if v.get("auction_date") else ""),
+            v.get("starting_bid_usd") and f"საწყისი ფასი ${v['starting_bid_usd']:,}",
+            v.get("buy_now_usd") and f"იყიდე ახლა ${v['buy_now_usd']:,}",
+        ]
+        parts = auction + parts
     desc = (v.get("description_meta") or "") + " · " + " · ".join(p for p in parts if p)
     desc = desc.strip(" ·")[:5000]
 
@@ -334,6 +363,8 @@ def build_item(v: dict[str, Any], ad_image: str | None = None) -> str | None:
         "    <dealer_name>Lion Auctions</dealer_name>",
         "    <dealer_communication_channel>WEBSITE</dealer_communication_channel>",
         f"    <custom_label_0>{xml_escape(location_label(v))}</custom_label_0>",
+        f"    <custom_label_1>{xml_escape(sale_type_label(v))}</custom_label_1>",
+        f"    <custom_label_2>{xml_escape(v.get('auction_date', ''))}</custom_label_2>",
         "  </item>",
     ])
 
