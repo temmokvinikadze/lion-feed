@@ -36,6 +36,7 @@ BG = (21, 23, 28)
 WHITE = (255, 255, 255)
 MUTED = (165, 170, 180)
 RED = (190, 30, 35)
+RED_TEXT = (230, 45, 50)   # brighter red for text on the dark band
 
 FONT_DIR = Path(__file__).parent / "fonts"
 BOLD = str(FONT_DIR / "NotoSansGeorgian-Bold.ttf")
@@ -137,9 +138,8 @@ def render(photo: Image.Image, title: str, price_usd: int, price_label: str,
     # --- top band: title, or the auction place + date ---
     max_w = SIZE - 2 * MARGIN
     if auction and len(auction) == 2:
-        d.rectangle([0, 0, SIZE, TOP_H], fill=RED)
         _two_lines(d, auction, (MARGIN, 6, SIZE - MARGIN, TOP_H - 6),
-                   (HEAVY, BOLD), (50, 40), (WHITE, (255, 225, 225)), "center")
+                   (HEAVY, BOLD), (50, 40), (RED_TEXT, WHITE), "center")
     else:
         flat = " ".join(t for t in title_lines if t)
         tf = _fit_font(d, flat, BOLD, max_w, 64, 40)
