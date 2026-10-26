@@ -58,6 +58,9 @@ BODY = {"ჯიპი": "SUV", "სედანი": "SEDAN", "კუპე": "C
         "მინივენი": "VAN", "პიკაპი": "PICKUP",
         "კაბრიოლეტი": "CONVERTIBLE", "ქროსოვერი": "CROSSOVER"}
 
+# Location (spec "მდებარეობა") → custom_label_0, used for catalog sets
+LOCATION = {"ავტომობილები გზიდან": "გზაში", "ავტომობილები ადგილზე": "წეროვანი"}
+
 # Colors (Georgian → English, for Meta consistency)
 COLOR = {
     "თეთრი": "White", "შავი": "Black", "ნაცრისფერი": "Gray",
@@ -217,6 +220,7 @@ def parse_listing(html_text: str, url: str) -> dict[str, Any] | None:
         "condition_ka": specs.get("მდგომარეობა", ""),
         "status_ka": specs.get("სტატუსი", ""),
         "customs": specs.get("განბაჟება", ""),
+        "location_ka": specs.get("მდებარეობა", ""),
         "purchase_type": purchase_type,
         "vin": vin,
         "starting_bid_usd": start_bid,
@@ -242,6 +246,11 @@ def mileage_km(raw: str) -> tuple[int, str]:
 
 def color_en(ka: str) -> str:
     return COLOR.get(ka.strip(), ka.strip())
+
+
+def location_label(v: dict[str, Any]) -> str:
+    raw = (v.get("location_ka") or "").strip()
+    return LOCATION.get(raw, raw)
 
 
 def xml_escape(s: Any) -> str:
@@ -324,6 +333,7 @@ def build_item(v: dict[str, Any], ad_image: str | None = None) -> str | None:
         f"    <availability>{availability}</availability>",
         "    <dealer_name>Lion Auctions</dealer_name>",
         "    <dealer_communication_channel>WEBSITE</dealer_communication_channel>",
+        f"    <custom_label_0>{xml_escape(location_label(v))}</custom_label_0>",
         "  </item>",
     ])
 
