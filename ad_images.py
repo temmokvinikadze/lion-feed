@@ -97,16 +97,54 @@ def _pin(d: ImageDraw.ImageDraw, cx: int, cy: int, r: int) -> None:
     d.ellipse([cx - h, head_cy - h, cx + h, head_cy + h], fill=BG)
 
 
-def render(photo: Image.Image, title: str, price_usd: int, price_label: str) -> Image.Image:
+def mtavruli(text: str) -> str:
+    """Georgian Mkhedruli → Mtavruli capitals (the font's display caps)."""
+    return "".join(chr(ord(c) + 0xBC0) if "\u10d0" <= c <= "\u10fa" else c for c in text)
+
+
+def _two_lines(d: ImageDraw.ImageDraw, lines: list[str], box: tuple[int, int, int, int],
+               fonts: tuple[str, str], sizes: tuple[int, int], fills: tuple, align: str) -> None:
+    """Two text lines stacked and centred vertically in box (x0, y0, x1, y1)."""
+    x0, y0, x1, y1 = box
+    max_w = x1 - x0
+    f1 = _fit_font(d, lines[0], fonts[0], max_w, sizes[0], 22)
+    f2 = _fit_font(d, lines[1], fonts[1], max_w, sizes[1], 20)
+    l1 = _ellipsize(d, lines[0], f1, max_w)
+    l2 = _ellipsize(d, lines[1], f2, max_w)
+    gap = 8
+    h1, h2 = f1.size, f2.size
+    top = y0 + ((y1 - y0) - (h1 + gap + h2)) // 2
+    x, anchor = (((x0 + x1) // 2, "mm") if align == "center" else (x1, "rm"))
+    d.text((x, top + h1 // 2), l1, font=f1, fill=fills[0], anchor=anchor)
+    d.text((x, top + h1 + gap + h2 // 2), l2, font=f2, fill=fills[1], anchor=anchor)
+
+
+def render(photo: Image.Image, title: str, price_usd: int, price_label: str,
+           banner: str = "") -> Image.Image:
+    """
+    banner: physical-auction lots only, "line1\nline2" (e.g. auction place /
+    date). It takes the top band, and the car title ("year make\nmodel")
+    moves to the bottom right in place of the location block.
+    """
     canvas = Image.new("RGB", (SIZE, SIZE), BG)
     canvas.paste(_photo_block(photo), (0, TOP_H))
     d = ImageDraw.Draw(canvas)
+    auction = banner.split("\n", 1) if banner else None
+    title_lines = title.split("\n", 1)
+    if len(title_lines) == 1:
+        title_lines.append("")
 
-    # --- top band: title ---
+    # --- top band: title, or the auction place + date ---
     max_w = SIZE - 2 * MARGIN
-    tf = _fit_font(d, title, BOLD, max_w, 64, 40)
-    t = _ellipsize(d, title, tf, max_w)
-    d.text((SIZE // 2, TOP_H // 2), t, font=tf, fill=WHITE, anchor="mm")
+    if auction and len(auction) == 2:
+        d.rectangle([0, 0, SIZE, TOP_H], fill=RED)
+        _two_lines(d, auction, (MARGIN, 6, SIZE - MARGIN, TOP_H - 6),
+                   (HEAVY, BOLD), (50, 40), (WHITE, (255, 225, 225)), "center")
+    else:
+        flat = " ".join(t for t in title_lines if t)
+        tf = _fit_font(d, flat, BOLD, max_w, 64, 40)
+        t = _ellipsize(d, flat, tf, max_w)
+        d.text((SIZE // 2, TOP_H // 2), t, font=tf, fill=WHITE, anchor="mm")
 
     # --- bottom band: price pill + brand ---
     y0 = TOP_H + PHOTO_H
@@ -127,6 +165,12 @@ def render(photo: Image.Image, title: str, price_usd: int, price_label: str) -> 
         d.text(((pill[0] + pill[2]) // 2, (pill[1] + pill[3]) // 2), price_txt,
                font=price_f, fill=WHITE, anchor="mm")
 
+    if auction and len(auction) == 2:
+        # car title on two lines where the location block normally sits
+        _two_lines(d, title_lines, (pill[2] + 30, y0 + 10, SIZE - MARGIN, y0 + BOTTOM_H - 10),
+                   (HEAVY, BOLD), (40, 32), (WHITE, MUTED), "right")
+        return canvas
+
     place_f = _font(HEAVY, 40)
     sub_f = _font(BOLD, 21)
     rx = SIZE - MARGIN
@@ -138,8 +182,10 @@ def render(photo: Image.Image, title: str, price_usd: int, price_label: str) -> 
     return canvas
 
 
-def image_key(lot_id: str, src: str, title: str, price: int, label: str) -> str:
-    h = hashlib.sha1(f"{TEMPLATE_VERSION}|{src}|{title}|{price}|{label}".encode()).hexdigest()[:10]
+def image_key(lot_id: str, src: str, title: str, price: int, label: str, banner: str = "") -> str:
+    # banner only enters the hash when set, so existing images keep their names
+    extra = f"|{banner}" if banner else ""
+    h = hashlib.sha1(f"{TEMPLATE_VERSION}|{src}|{title}|{price}|{label}{extra}".encode()).hexdigest()[:10]
     safe_id = "".join(c for c in str(lot_id) if c.isalnum()) or "x"
     return f"{safe_id}-{h}.jpg"
 
@@ -166,7 +212,7 @@ async def build_images(
     concurrency: int = 4,
 ) -> dict[str, str]:
     """
-    jobs: dicts with lot_id, src, title, price, label.
+    jobs: dicts with lot_id, src, title, price, label (+ optional banner).
     Returns {lot_id: filename} for every image available in out_dir.
     Already-rendered images are reused from cache_dir; only new or changed
     listings are downloaded and rendered.
@@ -178,7 +224,8 @@ async def build_images(
     stats = {"cached": 0, "rendered": 0, "failed": 0}
 
     async def one(job: dict[str, Any]) -> None:
-        name = image_key(job["lot_id"], job["src"], job["title"], job["price"], job["label"])
+        name = image_key(job["lot_id"], job["src"], job["title"], job["price"], job["label"],
+                         job.get("banner", ""))
         cached = cache_dir / name
         if not cached.exists():
             async with sem:
@@ -188,7 +235,8 @@ async def build_images(
                 return
             try:
                 img = await asyncio.to_thread(
-                    lambda: render(Image.open(io.BytesIO(data)), job["title"], job["price"], job["label"])
+                    lambda: render(Image.open(io.BytesIO(data)), job["title"], job["price"],
+                                   job["label"], job.get("banner", ""))
                 )
                 tmp = cached.with_suffix(".tmp")
                 await asyncio.to_thread(img.save, tmp, "JPEG", quality=86, optimize=True, progressive=True)
